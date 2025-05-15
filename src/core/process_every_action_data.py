@@ -41,6 +41,9 @@ PARTNER_CONFIGS = {
     },
     'exactius': {
         'email_name_search_key': 'subject:"EveryAction Scheduled Report - Exactius_Contribution_Report - exactius"'
+    },
+    'styt': {
+        'email_name_search_key': 'subject:"EveryAction Scheduled Report - Exactius_Styt_Contribution_Report"'
     }
     # Add more partners as needed
 }
@@ -78,9 +81,13 @@ async def process_data(request: ProcessRequest):
         email_service = EmailService(auth_service)
         transformation_service = DataTransformationService()
         
-        # Set email search key based on partner if not provided
-        if not request.email_name_search_key:
-            request.email_name_search_key = f'subject:"EveryAction Scheduled Report - Exactius_Contribution_Report - {request.partner}"'
+        # Get email search key from PARTNER_CONFIGS
+        if request.partner not in PARTNER_CONFIGS:
+            raise HTTPException(status_code=400, detail=f"Unknown partner: {request.partner}")
+            
+        # Use the exact search key from PARTNER_CONFIGS
+        email_name_search_key = PARTNER_CONFIGS[request.partner]['email_name_search_key']
+        print(f"Using configured search key: {email_name_search_key}")
         
         # Get access token
         access_token = auth_service.get_access_token()
@@ -89,7 +96,7 @@ async def process_data(request: ProcessRequest):
         attachment_data = await email_service.process_attachments(
             email_to="data.analysis@exacti.us",
             partner=request.partner,
-            email_name_search_key=request.email_name_search_key,
+            email_name_search_key=email_name_search_key,
             access_token=access_token
         )
         
@@ -103,9 +110,12 @@ async def process_data(request: ProcessRequest):
         df = transformation_service.transform_data(
             attachment_ids=attachment_data.get("message_ids", []),
             partner=request.partner,
-            email_name_search_key=request.email_name_search_key,
+            email_name_search_key=email_name_search_key,
             attachment_data=attachment_data.get("data")
         )
+        
+        # Clean column names for BigQuery
+        df.columns = [col.replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '').replace('.', '_') for col in df.columns]
         
         # Upload to BigQuery
         client = bigquery.Client(project=request.project_id)
@@ -139,7 +149,7 @@ async def process_data(request: ProcessRequest):
         
         # Delete the email after successful upload
         await email_service.delete_email(
-            email_name_search_key=request.email_name_search_key,
+            email_name_search_key=email_name_search_key,
             email_to="data.analysis@exacti.us",
             access_token=access_token
         )
@@ -256,6 +266,9 @@ def process_email_attachments(
             except Exception as e:
                 print(f"Failed to transform data: {str(e)}")
                 raise
+            
+            # Clean column names for BigQuery
+            df.columns = [col.replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '').replace('.', '_') for col in df.columns]
             
             # Upload to BigQuery
             print("Uploading to BigQuery...")
