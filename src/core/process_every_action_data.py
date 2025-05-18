@@ -35,7 +35,19 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
-app = FastAPI()
+# Create test_data directory if it doesn't exist
+os.makedirs("test_data", exist_ok=True)
+
+app = FastAPI(
+    title="Every Action Data Service",
+    description="Service for processing and uploading Every Action data to BigQuery",
+    version="1.0.0"
+)
+
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
 
 # Partner configurations
 PARTNER_CONFIGS = {
