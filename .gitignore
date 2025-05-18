@@ -28,4 +28,9 @@ build/
 
 # Local development settings
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# Test data and files
+test_data/
+test_*.py
+test_*.ps1 

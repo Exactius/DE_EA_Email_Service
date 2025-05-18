@@ -1,0 +1,70 @@
+name: Deploy to Google Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Load environment variables from file
+        run: |
+          while IFS= read -r line || [ -n "$line" ]; do
+            if [[ ! $line =~ ^# && $line =~ ^[A-Z_]+: ]]; then
+              key="$(echo "$line" | cut -d ':' -f1 | xargs)"
+              value="$(echo "$line" | cut -d ':' -f2- | xargs)"
+              echo "$key=$value" >> $GITHUB_ENV
+            fi
+          done < .github/config/env.yml
+
+      - name: Display Environment Variables
+        run: |
+          echo "PROJECT_ID=${{ env.PROJECT_ID }}"
+          echo "SERVICE_NAME=${{ env.SERVICE_NAME }}"
+          echo "IMAGE=${{ env.IMAGE }}"
+          echo "REGION=${{ env.REGION }}"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: '${{ secrets.GCP_SA_KEY }}'
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          project_id: '${{ env.PROJECT_ID }}'
+
+      - name: Build and push Docker image to Google Container Registry
+        run: |
+          gcloud auth configure-docker
+          docker build -t ${{ env.IMAGE }} .
+          docker push ${{ env.IMAGE }}
+
+      - name: Deploy to Google Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image ${{ env.IMAGE }} \
+            --platform managed \
+            --region ${{ env.REGION }} \
+            --allow-unauthenticated \
+            --memory 1024Mi
+
+      - name: Verify Deployment
+        run: |
+          # Wait for service to be ready
+          sleep 30
+          
+          # Get service URL
+          SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+            --platform managed \
+            --region ${{ env.REGION }} \
+            --format 'value(status.url)')
+          
+          # Check if service is responding
+          curl -f $SERVICE_URL/health || exit 1
