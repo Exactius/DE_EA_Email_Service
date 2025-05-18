@@ -64,7 +64,7 @@ jobs:
           # Get service URL
           SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
             --platform managed \
-            --region ${{ env.REGION }} \
+            --region europe-west2 \
             --format 'value(status.url)')
           
           # Check if service is responding
