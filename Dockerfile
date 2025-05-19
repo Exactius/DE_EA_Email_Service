@@ -6,7 +6,7 @@ WORKDIR /app
 
 # Copy requirements first for better caching
 COPY requirements.txt .
-RUN pip install --upgrade pip
+RUN pip install --upgrade pip setuptools
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the entire application
@@ -19,4 +19,4 @@ ENV PORT=8080
 EXPOSE ${PORT}
 
 # Start the application with uvicorn
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"] 
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT} 
