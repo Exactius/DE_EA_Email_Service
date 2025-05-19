@@ -2,10 +2,8 @@ from typing import Dict, Any, Tuple, Optional
 import pandas as pd
 from datetime import datetime
 import traceback
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
-import uvicorn
-import asyncio
 import logging
 import os
 from dotenv import load_dotenv
@@ -38,14 +36,10 @@ load_dotenv()
 # Create test_data directory if it doesn't exist
 os.makedirs("test_data", exist_ok=True)
 
-app = FastAPI(
-    title="Every Action Data Service",
-    description="Service for processing and uploading Every Action data to BigQuery",
-    version="1.0.0"
-)
+router = APIRouter()
 
 # Health check endpoint
-@app.get("/health")
+@router.get("/health")
 async def health_check():
     return {"status": "healthy"}
 
@@ -75,7 +69,7 @@ class ProcessRequest(BaseModel):
     source_type: str = "email"  # "email" or "csv"
     csv_filename: Optional[str] = None  # Name of the CSV file to process
 
-@app.post("/process")
+@router.post("/process")
 async def process_data(request: ProcessRequest):
     """
     Process data from either email attachment or direct CSV upload and upload to BigQuery.
@@ -454,7 +448,7 @@ async def process_data(request: ProcessRequest):
         log_error("Unexpected error", {"error": str(e)})
         raise HTTPException(status_code=500, detail="An unexpected error occurred")
 
-@app.post("/process-csv")
+@router.post("/process-csv")
 async def process_csv_file(
     file: UploadFile = File(...),
     partner: str = None,
@@ -539,7 +533,7 @@ async def process_csv_file(
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(router, host="0.0.0.0", port=8000)
 
 def process_email_attachments(
     project_id: str,
