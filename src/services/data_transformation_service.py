@@ -69,7 +69,11 @@ class DataTransformationService:
                 logger.info("Hashing Personal Email column")
                 df['email'] = df['Personal Email'].apply(hash_value)
                 df = df.drop('Personal Email', axis=1)
-                
+            elif 'Preferred Email' in df.columns:
+                logger.info("Hashing Preferred Email column")
+                df['email'] = df['Preferred Email'].apply(hash_value)
+                df = df.drop('Preferred Email', axis=1)
+
             if 'Preferred Phone Number' in df.columns:
                 logger.info("Hashing Preferred Phone Number column")
                 df['phone'] = df['Preferred Phone Number'].apply(hash_value)
