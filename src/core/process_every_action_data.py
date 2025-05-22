@@ -46,7 +46,7 @@ async def health_check():
 # Partner configurations
 PARTNER_CONFIGS = {
     'whitestrok': {
-        'email_name_search_key': 'subject:"EveryAction Scheduled Report - Exactius_Contribution_Report - whitestrok"'
+        'email_name_search_key': 'subject:"EveryAction Scheduled Report - Exactius_Contribution_Report - whitestork"'
     },
     'exactius': {
         'email_name_search_key': 'subject:"EveryAction Scheduled Report - Exactius_Contribution_Report - exactius"'
