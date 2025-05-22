@@ -229,11 +229,11 @@ class EmailService:
         """Extract download link from email body using BeautifulSoup."""
         try:
             if not message_data or not isinstance(message_data, tuple) or not message_data[0]:
-                logger.debug("No message data or message_data[0] is empty.")
+                logger.error("No message data or message_data[0] is empty.")
                 return None
             message = message_data[0][0]  # Extract the first message from the list
             if 'payload' not in message:
-                logger.debug("No 'payload' in message.")
+                logger.error("No 'payload' in message.")
                 return None
             payload = message['payload']
             body_data = None
@@ -241,15 +241,18 @@ class EmailService:
             # Try top-level body
             if 'body' in payload and 'data' in payload['body'] and payload['body']['data']:
                 body_data = payload['body']['data']
+                logger.info("Found body data in top-level body")
             # Try parts
             elif 'parts' in payload:
+                logger.info(f"Checking {len(payload['parts'])} parts for body data")
                 for part in payload['parts']:
                     if part.get('mimeType') == 'text/html' and 'data' in part.get('body', {}):
                         body_data = part['body']['data']
+                        logger.info("Found body data in parts")
                         break
 
             if not body_data:
-                logger.debug("No body data found!")
+                logger.error("No body data found in message!")
                 return None
 
             # Decode base64
@@ -258,16 +261,19 @@ class EmailService:
             if padding:
                 body_data += '=' * (4 - padding)
             decoded_html = base64.b64decode(body_data).decode('utf-8')
+            logger.info("Successfully decoded HTML body")
 
             # Parse HTML and extract the link
             soup = BeautifulSoup(decoded_html, 'html.parser')
             link = soup.find('a', string=lambda text: text and 'Click here' in text)
             if link and link.has_attr('href'):
                 url = link['href']
-                logger.debug("Found download URL")
+                logger.info(f"Found download URL: {url}")
                 return url
             else:
-                logger.debug("No 'Click here' link found.")
+                logger.error("No 'Click here' link found in email body. Available links:")
+                for a in soup.find_all('a'):
+                    logger.error(f"Link text: {a.text}, href: {a.get('href')}")
                 return None
 
         except Exception as e:
@@ -277,11 +283,13 @@ class EmailService:
     def download_file(self, url: str) -> Optional[bytes]:
         """Download file from EveryAction"""
         try:
+            logger.info(f"Attempting to download file from URL: {url}")
             response = httpx.get(url, timeout=60)
             if response.status_code == 200:
+                logger.info("File downloaded successfully")
                 return response.content
             else:
-                logger.error(f"Failed to download file: {response.status_code}")
+                logger.error(f"Failed to download file. Status code: {response.status_code}, Response: {response.text}")
                 return None
         except Exception as e:
             logger.error(f"Failed to download file: {str(e)}")
@@ -300,6 +308,7 @@ class EmailService:
         """
         try:
             # Get messages
+            logger.info(f"Searching for messages with key: {email_name_search_key}")
             messages = await self.api_call(
                 email_to=email_to,
                 endpoint="messages",
@@ -308,7 +317,10 @@ class EmailService:
             )
             
             if not messages:
+                logger.error("No messages found matching the search criteria")
                 return {"status": "success", "message": "No new messages found"}
+            
+            logger.info(f"Found {len(messages)} messages")
             
             # Initialize data dictionary
             data = {
@@ -319,6 +331,7 @@ class EmailService:
             }
             
             # Get first message details
+            logger.info(f"Getting details for message ID: {messages[0]['id']}")
             message_data = await self.api_call(
                 endpoint="data",
                 access_token=access_token,
@@ -333,7 +346,10 @@ class EmailService:
                 if file_content:
                     data["data"] = file_content.decode('utf-8')
                     data["message_ids"].append(messages[0]['id'])
-                    logger.info("File downloaded successfully")
+                    logger.info("File downloaded and decoded successfully")
+                else:
+                    logger.error("Failed to download file content")
+                    return {"status": "error", "message": "Failed to download file content"}
             else:
                 logger.error("No download link found in message")
                 return {"status": "error", "message": "No download link found in message"}
