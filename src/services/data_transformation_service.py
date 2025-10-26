@@ -30,6 +30,90 @@ def hash_value(value: str) -> str:
         value = str(value)
     return hashlib.sha256(value.encode()).hexdigest()
 
+def normalize_data(df: pd.DataFrame, email_name_search_key: str) -> pd.DataFrame:
+    """
+    Normalize data by handling different column names and creating standardized columns.
+    
+    Args:
+        df: Input DataFrame
+        email_name_search_key: Email search key for filtering
+        
+    Returns:
+        Normalized DataFrame
+    """
+    try:
+        logger.info("Normalizing data")
+        logger.info(f"Available columns: {df.columns.tolist()}")
+        
+        # Create a copy to avoid modifying the original
+        normalized_df = df.copy()
+        
+        # Handle different phone column names
+        phone_columns = [
+            'preferred_phone',
+            'Preferred Phone Number',
+            'Phone Number',
+            'Phone',
+            'Mobile',
+            'Mobile Number',
+            'Cell Phone',
+            'Cell'
+        ]
+        
+        # Find which phone column exists
+        phone_col = None
+        for col in phone_columns:
+            if col in normalized_df.columns:
+                phone_col = col
+                logger.info(f"Found phone column: {phone_col}")
+                break
+        
+        # Create fb_phone column safely
+        if phone_col:
+            normalized_df["fb_phone"] = normalized_df[phone_col]
+            logger.info("Created fb_phone column from existing phone column")
+        else:
+            # If no phone column found, create empty fb_phone column
+            normalized_df["fb_phone"] = ""
+            logger.warning("No phone column found, created empty fb_phone column")
+        
+        # Handle different email column names
+        email_columns = [
+            'preferred_email',
+            'Preferred Email',
+            'Personal Email',
+            'Email',
+            'Email Address'
+        ]
+        
+        # Find which email column exists
+        email_col = None
+        for col in email_columns:
+            if col in normalized_df.columns:
+                email_col = col
+                logger.info(f"Found email column: {email_col}")
+                break
+        
+        # Create standardized email column
+        if email_col:
+            normalized_df["email"] = normalized_df[email_col]
+            logger.info("Created standardized email column")
+        else:
+            # If no email column found, create empty email column
+            normalized_df["email"] = ""
+            logger.warning("No email column found, created empty email column")
+        
+        # Add metadata
+        normalized_df['email_name_search_key'] = email_name_search_key
+        normalized_df['processed_at'] = datetime.now()
+        
+        logger.info(f"Normalized DataFrame shape: {normalized_df.shape}")
+        return normalized_df
+        
+    except Exception as e:
+        logger.error(f"Error in normalize_data: {str(e)}")
+        raise TransformationError(f"Failed to normalize data: {str(e)}")
+
 class DataTransformationService:
     """Service for transforming data from email attachments"""
     
@@ -62,6 +146,10 @@ class DataTransformationService:
             logger.info("Reading CSV data")
             df = pd.read_csv(io.StringIO(attachment_data))
             logger.info(f"Initial DataFrame shape: {df.shape}")
+            logger.info(f"Initial columns: {df.columns.tolist()}")
+            
+            # Normalize data first to handle different column names
+            df = normalize_data(df, email_name_search_key)
             
             # Hash sensitive data
             logger.info("Processing sensitive data")
@@ -97,7 +185,8 @@ class DataTransformationService:
                 'Digital Acquisition Data: UTM Medium': 'digital_utm_medium',
                 'Digital Acquisition Data: UTM Source': 'digital_utm_source',
                 'uqaid - Facebook Ad ID (Exactius)': 'facebook_adid',
-                'Facebook Ad ID (Exactius)': 'facebook_adid'  # Adding alternative column name
+                'Facebook Ad ID (Exactius)': 'facebook_adid',  # Adding alternative column name
+                'Mailing Zip/Postal': 'mailing_zip'  # New field added
             }
             
             for old_col, new_col in utm_columns.items():
@@ -177,9 +266,8 @@ class DataTransformationService:
                 print(f"Read CSV data with shape: {df.shape}")
                 print(f"Columns: {df.columns.tolist()}")
                 
-                # Add metadata
-                df['processed_at'] = datetime.now()
-                df['email_name_search_key'] = email_name_search_key
+                # Normalize data to handle different column names
+                df = normalize_data(df, email_name_search_key)
                 
                 dfs.append(df)
                 

@@ -344,7 +344,20 @@ class EmailService:
                 # Download the file
                 file_content = self.download_file(download_url)
                 if file_content:
-                    data["data"] = file_content.decode('utf-8')
+                    # Auto-detect encoding (UTF-16 or UTF-8)
+                    try:
+                        decoded_content = file_content.decode('utf-8')
+                        logger.info("File decoded as UTF-8")
+                    except UnicodeDecodeError:
+                        try:
+                            decoded_content = file_content.decode('utf-16')
+                            logger.info("File decoded as UTF-16")
+                        except UnicodeDecodeError:
+                            # Last resort: try latin-1 (never fails but may produce garbage)
+                            decoded_content = file_content.decode('latin-1')
+                            logger.warning("File decoded as latin-1 (fallback)")
+
+                    data["data"] = decoded_content
                     data["message_ids"].append(messages[0]['id'])
                     logger.info("File downloaded and decoded successfully")
                 else:
