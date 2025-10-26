@@ -45,7 +45,7 @@ async def health_check():
 
 # Partner configurations
 PARTNER_CONFIGS = {
-    'whitestrok': {
+    'whitestork': {
         'email_name_search_key': 'subject:"EveryAction Scheduled Report - Exactius_Contribution_Report - whitestork"'
     },
     'exactius': {
@@ -162,42 +162,51 @@ async def process_data(request: ProcessRequest):
             
             # Read the CSV file
             try:
-                # First read the file to get the actual header
-                with open(csv_path, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
-                    # Skip SEP= line if it exists
-                    start_idx = 1 if lines[0].strip().startswith('SEP=') else 0
-                    header = lines[start_idx].strip()
-                    actual_columns = header.split(',')
-                    print("\nActual columns from CSV:")
-                    print(actual_columns)
-                
-                # Now read the CSV with the actual columns
+                # Auto-detect encoding (UTF-16 or UTF-8)
+                encoding = 'utf-8-sig'
+                skip_rows = 0
+
+                try:
+                    # Try UTF-8 first
+                    with open(csv_path, 'r', encoding='utf-8-sig') as f:
+                        first_line = f.readline().strip()
+                        skip_rows = 1 if first_line.startswith('SEP=') else 0
+                except UnicodeDecodeError:
+                    # If UTF-8 fails, try UTF-16
+                    encoding = 'utf-16'
+                    with open(csv_path, 'r', encoding='utf-16') as f:
+                        first_line = f.readline().strip()
+                        skip_rows = 1 if first_line.startswith('SEP=') else 0
+
+                print(f"Detected encoding: {encoding}")
+
+                # Read the CSV properly using pandas
                 df = pd.read_csv(
                     csv_path,
-                    encoding='utf-8',
+                    encoding=encoding,  # Auto-detected encoding
                     on_bad_lines='skip',
                     low_memory=False,
-                    skiprows=start_idx + 1,  # Skip header row and SEP= line if it exists
+                    skiprows=skip_rows,  # Skip SEP= line if it exists
                     quoting=1,  # QUOTE_ALL
-                    dtype=str,  # Read all columns as strings initially
-                    names=actual_columns  # Use actual columns from CSV
+                    dtype=str  # Read all columns as strings initially
                 )
                 
                 # Print the columns we actually got
                 print("\nColumns from DataFrame:")
                 print(df.columns.tolist())
-                
+
                 # Print first few rows to verify data alignment
                 print("\nFirst few rows of raw data:")
-                print(df.head().to_string())
-                
+                print(df.head()[df.columns[:5]].to_string())  # Just first 5 cols for readability
+
+                # Clean column names first - remove extra spaces
+                df.columns = df.columns.str.strip()
+
                 # Create mapping from actual columns to expected columns
                 column_mapping = {
                     'Contribution ID': 'contribution_id',
                     'VANID': 'vanid',
-                    'last_name': 'last_name',
-                    'first_name': 'first_name',
+                    'Contact Name': 'contact_name',  # Changed from separate first/last name
                     'Date Received': 'date_received',
                     'Amount': 'amount',
                     'Source Code': 'source_code',
@@ -227,18 +236,55 @@ async def process_data(request: ProcessRequest):
                     'Digital Acquisition Data: UTM Source': 'digital_utm_source',
                     'utm_adid  (Exactius)': 'utm_adid',
                     'utm_campaign (Exactius)': 'utm_campaign',
-                    'uqaid  to  Facebook Ad ID (Exactius)': 'facebook_adid'
+                    'uqaid  to  Facebook Ad ID (Exactius)': 'facebook_adid',
+                    # Legacy columns
+                    'Legacy: FR UTM Campaign': 'legacy_utm_campaign',
+                    'Legacy: FR UTM Content': 'legacy_utm_content',
+                    'Legacy: FR UTM Medium': 'legacy_utm_medium',
+                    'Legacy: FR UTM Source': 'legacy_utm_source',
+                    'Legacy: FR UTM Term': 'legacy_utm_term',
+                    'Channel': 'channel',
+                    'Online Form Campaign Type': 'online_form_campaign_type',
+                    'Via Main Domain  to  vmd  to  (Exactius)': 'via_main_domain',
+                    'Digital Acquisition Data: AdSet': 'digital_adset',
+                    'Digital Acquisition Data: Channel': 'digital_channel',
+                    'Digital Acquisition Data: Channel Type': 'digital_channel_type',
+                    'Digital Acquisition Data: Device': 'digital_device',
+                    'Time Created': 'time_created',
+                    'Mailing Zip/Postal': 'mailing_zip'
                 }
                 
                 # Rename columns using the mapping
+                print("\nRenaming columns...")
+                renamed_count = 0
+                for old_name, new_name in column_mapping.items():
+                    if old_name in df.columns:
+                        renamed_count += 1
+                        print(f"  Renaming: '{old_name}' -> '{new_name}'")
+
                 df = df.rename(columns=column_mapping)
-                
+                print(f"Total columns renamed: {renamed_count} out of {len(column_mapping)}")
+
+                print("\nColumns after renaming:")
+                print(df.columns.tolist()[:10])  # Show first 10 columns
+
+                # Split Contact Name into first_name and last_name
+                if 'contact_name' in df.columns:
+                    # Remove quotes and split
+                    df['contact_name'] = df['contact_name'].str.strip('"')
+                    name_parts = df['contact_name'].str.split(', ', n=1, expand=True)
+                    df['last_name'] = name_parts[0] if 0 in name_parts.columns else ''
+                    df['first_name'] = name_parts[1] if 1 in name_parts.columns else ''
+                    # Drop the original contact_name column
+                    df = df.drop('contact_name', axis=1)
+                    print("\nSplit Contact Name into first_name and last_name")
+
                 # Hash sensitive fields
                 def hash_value(value):
                     if pd.isna(value) or value == '':
                         return ''
                     return hashlib.sha256(str(value).strip().lower().encode()).hexdigest()
-                
+
                 # Hash sensitive fields
                 sensitive_fields = ['email', 'phone', 'last_name', 'first_name']
                 for field in sensitive_fields:
@@ -293,25 +339,19 @@ async def process_data(request: ProcessRequest):
                 print("==========================================")
                 print(df.head().to_string())
                 
-                # Reorder columns to match BigQuery schema
-                column_order = [
-                    'contribution_id', 'vanid', 'date_received', 'amount', 'source_code', 'designation',
-                    'payment_method', 'remaining_amount', 'financial_batch', 'card_type', 'covered_costs',
-                    'covered_costs_amount', 'first_contribution_date', 'form_id', 'form_name',
-                    'is_recurring_commitment', 'mailing_city', 'mailing_country', 'mailing_state',
-                    'online_reference_number', 'email', 'phone', 'status', 'total_number_of_contributions',
-                    'digital_utm_campaign', 'digital_utm_medium', 'digital_utm_source', 'utm_adid',
-                    'utm_campaign', 'utm_medium', 'utm_source', 'facebook_adid', 'last_name', 'first_name'
+                # Don't reorder columns - keep all existing columns
+                # Just ensure required columns exist
+                required_columns = [
+                    'contribution_id', 'vanid', 'date_received', 'amount',
+                    'email', 'phone', 'last_name', 'first_name'
                 ]
-                
-                # Ensure all columns exist
-                for col in column_order:
+
+                for col in required_columns:
                     if col not in df.columns:
-                        print(f"Warning: Column {col} not found in DataFrame")
-                        df[col] = None
-                
-                # Reorder columns
-                df = df[column_order]
+                        print(f"Warning: Required column {col} not found, adding with empty values")
+                        df[col] = ''
+
+                print(f"\nDataFrame has {len(df.columns)} columns after processing")
                 print("\nFinal Data (Top 5 rows):")
                 print("=====================")
                 print(df.head().to_string())
@@ -327,46 +367,13 @@ async def process_data(request: ProcessRequest):
                 df['processed_at'] = pd.Timestamp.now()  # Use pandas Timestamp for datetime
                 df['partner'] = request.partner
                 df['email_name_search_key'] = f"direct_upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                df['id'] = df['contribution_id']  # Already a string from above
-                
-                # Print detailed DataFrame information
-                print("\nDataFrame Information:")
-                print("=====================")
-                print(f"Shape: {df.shape}")
-                print("\nColumns:")
-                for col in df.columns:
-                    print(f"- {col}")
-                print("\nFirst few rows:")
-                print(df.head())
-                print("\nData types:")
-                print(df.dtypes)
-                
-                # Check for empty or problematic columns
-                empty_cols = df.columns[df.isna().all()].tolist()
-                if empty_cols:
-                    print("\nEmpty columns found:", empty_cols)
-                
-                # Check for columns with all zeros or empty strings
-                zero_cols = []
-                for col in df.columns:
-                    if df[col].dtype in ['int64', 'float64']:
-                        if (df[col] == 0).all():
-                            zero_cols.append(col)
-                    elif df[col].dtype == 'object':
-                        if (df[col] == '').all():
-                            zero_cols.append(col)
-                if zero_cols:
-                    print("\nColumns with all zeros or empty strings:", zero_cols)
-                
-                # Convert DataFrame to CSV string for transformation
-                csv_data = df.to_csv(index=False, quoting=1)  # QUOTE_ALL
-                
-                # For direct CSV uploads, we don't need to use the transformation service
-                # Just ensure the data types are correct
-                df['processed_at'] = pd.Timestamp.now()  # Use pandas Timestamp for datetime
-                df['partner'] = request.partner
-                df['email_name_search_key'] = f"direct_upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                df['id'] = df['contribution_id']  # Already a string from above
+
+                # Set id field - check if contribution_id exists
+                if 'contribution_id' in df.columns:
+                    df['id'] = df['contribution_id']
+                else:
+                    print("WARNING: contribution_id column not found, using row index for id")
+                    df['id'] = df.index.astype(str)
                 
                 # Print detailed DataFrame information
                 print("\nDataFrame Information:")
