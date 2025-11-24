@@ -16,6 +16,24 @@ from ..utils import (
 # Configure logging
 logger = logging.getLogger(__name__)
 
+# Column mapping for Recurring Commitment Report (WhiteStork sustaining donors)
+RECURRING_COMMITMENT_COLUMNS = {
+    'Recurring Commitment ID': 'recurring_commitment_id',
+    'VANID': 'vanid',
+    'Start Date': 'start_date',
+    'End Date': 'end_date',
+    'Amount': 'amount',
+    'Currency': 'currency',
+    'Frequency': 'frequency',
+    'Total Amount Received to Date': 'total_received',
+    'Total Amount Expected to Date': 'total_expected',
+    'Status': 'status',
+    'Payment Method': 'payment_method',
+    'Designation': 'designation',
+    'Financial Household ID': 'financial_household_id',
+    'Source Code': 'source_code'
+}
+
 def hash_value(value: str) -> str:
     """
     Hash a string value using SHA-256.
@@ -231,7 +249,123 @@ class DataTransformationService:
                 "num_attachments": len(attachment_ids)
             })
             raise TransformationError(f"Failed to transform data: {str(e)}")
-            
+
+    def transform_recurring_commitment_data(
+        self,
+        attachment_ids: List[str],
+        partner: str,
+        email_name_search_key: str,
+        attachment_data: str = None
+    ) -> pd.DataFrame:
+        """
+        Transform Recurring Commitment Report data from EveryAction.
+
+        This is for WhiteStork sustaining donor metrics.
+        NO HASHING - just column renaming and metadata.
+        Contact Name is dropped (not needed).
+
+        Args:
+            attachment_ids: List of attachment IDs to process
+            partner: Partner identifier (e.g., 'whitestork_recurring')
+            email_name_search_key: Email search key for filtering
+            attachment_data: Pre-fetched CSV data as string
+
+        Returns:
+            DataFrame containing transformed recurring commitment data
+
+        Raises:
+            TransformationError: If transformation fails
+        """
+        try:
+            logger.info(f"Transforming recurring commitment data for partner {partner}")
+
+            # Read CSV data
+            logger.info("Reading CSV data")
+            df = pd.read_csv(io.StringIO(attachment_data))
+            logger.info(f"Initial DataFrame shape: {df.shape}")
+            logger.info(f"Initial columns: {df.columns.tolist()}")
+
+            # Drop Contact Name column (no PII needed for this report)
+            if 'Contact Name' in df.columns:
+                logger.info("Dropping Contact Name column (not needed)")
+                df = df.drop('Contact Name', axis=1)
+
+            # Rename columns using the mapping
+            logger.info("Renaming columns using RECURRING_COMMITMENT_COLUMNS mapping")
+            renamed_count = 0
+            for old_col, new_col in RECURRING_COMMITMENT_COLUMNS.items():
+                if old_col in df.columns:
+                    logger.info(f"Renaming: '{old_col}' -> '{new_col}'")
+                    df = df.rename(columns={old_col: new_col})
+                    renamed_count += 1
+            logger.info(f"Renamed {renamed_count} columns")
+
+            # Clean amount fields - remove $ and convert to float
+            amount_columns = ['amount', 'total_received', 'total_expected']
+            for col in amount_columns:
+                if col in df.columns:
+                    # Remove $ sign and commas, convert to float
+                    df[col] = df[col].astype(str).str.replace('$', '', regex=False)
+                    df[col] = df[col].str.replace(',', '', regex=False)
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+                    logger.info(f"Cleaned amount column: {col}")
+
+            # Convert date columns to proper format
+            date_columns = ['start_date', 'end_date']
+            for col in date_columns:
+                if col in df.columns:
+                    # Handle empty/null end dates
+                    df[col] = pd.to_datetime(df[col], errors='coerce')
+                    df[col] = df[col].dt.strftime('%Y-%m-%d')
+                    # Replace 'NaT' string with None
+                    df[col] = df[col].replace('NaT', None)
+                    logger.info(f"Converted date column: {col}")
+
+            # Add metadata
+            logger.info("Adding metadata")
+            df['processed_at'] = datetime.now()
+            df['partner'] = partner
+            df['email_name_search_key'] = email_name_search_key
+
+            # Use recurring_commitment_id as the primary key if available
+            if 'recurring_commitment_id' in df.columns:
+                df['id'] = df['recurring_commitment_id'].astype(str)
+            else:
+                df['id'] = df.index.astype(str)
+
+            # Ensure string columns are properly typed
+            string_columns = ['vanid', 'currency', 'frequency', 'status',
+                            'payment_method', 'designation', 'financial_household_id', 'source_code']
+            for col in string_columns:
+                if col in df.columns:
+                    df[col] = df[col].astype(str)
+                    # Replace 'nan' strings with empty string
+                    df[col] = df[col].replace('nan', '')
+
+            # Clean column names for BigQuery - replace spaces and special chars with underscores
+            df.columns = [
+                col.replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '').replace('.', '_')
+                for col in df.columns
+            ]
+            logger.info("Cleaned column names for BigQuery compatibility")
+
+            logger.info(f"Final DataFrame shape: {df.shape}")
+            logger.info(f"Final columns: {df.columns.tolist()}")
+
+            log_operation("recurring_commitment_transformation", {
+                "partner": partner,
+                "num_rows": len(df)
+            })
+
+            return df
+
+        except Exception as e:
+            log_error(e, {
+                "partner": partner,
+                "num_attachments": len(attachment_ids)
+            })
+            raise TransformationError(f"Failed to transform recurring commitment data: {str(e)}")
+
     def transform_link_data(
         self,
         attachment_ids: List[str],
