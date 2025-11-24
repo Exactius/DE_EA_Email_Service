@@ -46,13 +46,20 @@ async def health_check():
 # Partner configurations
 PARTNER_CONFIGS = {
     'whitestork': {
-        'email_name_search_key': 'subject:"EveryAction Scheduled Report - Exactius_Contribution_Report - whitestork"'
+        'email_name_search_key': 'subject:"EveryAction Scheduled Report - Exactius_Contribution_Report - whitestork"',
+        'report_type': 'contribution'
+    },
+    'whitestork_recurring': {
+        'email_name_search_key': 'subject:"EveryAction Scheduled Report - Recurring Commitment Report - whitestork"',
+        'report_type': 'recurring_commitment'
     },
     'exactius': {
-        'email_name_search_key': 'subject:"EveryAction Scheduled Report - Exactius_Contribution_Report - exactius"'
+        'email_name_search_key': 'subject:"EveryAction Scheduled Report - Exactius_Contribution_Report - exactius"',
+        'report_type': 'contribution'
     },
     'styt': {
-        'email_name_search_key': 'subject:"EveryAction Scheduled Report - Exactius_Styt_Contribution_Report"'
+        'email_name_search_key': 'subject:"EveryAction Scheduled Report - Exactius_Styt_Contribution_Report"',
+        'report_type': 'contribution'
     }
     # Add more partners as needed
 }
@@ -121,14 +128,27 @@ async def process_data(request: ProcessRequest):
                 
             if not attachment_data.get("data"):
                 raise HTTPException(status_code=404, detail="No data found in attachment")
-            
-            # Process the data
-            df = transformation_service.transform_data(
-                attachment_ids=attachment_data.get("message_ids", []),
-                partner=request.partner,
-                email_name_search_key=email_name_search_key,
-                attachment_data=attachment_data.get("data")
-            )
+
+            # Process the data based on report type
+            report_type = PARTNER_CONFIGS[request.partner].get('report_type', 'contribution')
+            logger.info(f"Processing report type: {report_type}")
+
+            if report_type == 'recurring_commitment':
+                # Use recurring commitment transformer (no hashing, drops Contact Name)
+                df = transformation_service.transform_recurring_commitment_data(
+                    attachment_ids=attachment_data.get("message_ids", []),
+                    partner=request.partner,
+                    email_name_search_key=email_name_search_key,
+                    attachment_data=attachment_data.get("data")
+                )
+            else:
+                # Use standard contribution transformer (with hashing)
+                df = transformation_service.transform_data(
+                    attachment_ids=attachment_data.get("message_ids", []),
+                    partner=request.partner,
+                    email_name_search_key=email_name_search_key,
+                    attachment_data=attachment_data.get("data")
+                )
             
             # Initialize BigQuery service and upload data
             try:
@@ -154,13 +174,57 @@ async def process_data(request: ProcessRequest):
         elif request.source_type == "csv":
             if not request.csv_filename:
                 raise HTTPException(status_code=400, detail="No CSV filename provided")
-                
+
             # Construct the path to the CSV file
             csv_path = os.path.join("test_data", request.csv_filename)
             if not os.path.exists(csv_path):
                 raise HTTPException(status_code=404, detail=f"CSV file not found: {request.csv_filename}")
-            
-            # Read the CSV file
+
+            # Check if this is a recurring commitment report type
+            report_type = PARTNER_CONFIGS.get(request.partner, {}).get('report_type', 'contribution')
+            logger.info(f"CSV processing for report type: {report_type}")
+
+            if report_type == 'recurring_commitment':
+                # Use the DataTransformationService for recurring commitment
+                with open(csv_path, 'r', encoding='utf-8-sig') as f:
+                    csv_data = f.read()
+
+                df = transformation_service.transform_recurring_commitment_data(
+                    attachment_ids=[],
+                    partner=request.partner,
+                    email_name_search_key=f"csv_upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                    attachment_data=csv_data
+                )
+
+                # Upload to BigQuery
+                client = bigquery.Client(project=request.project_id)
+                dataset_id = f"{request.project_id}.{request.dataset}"
+                table_id = f"{dataset_id}.{request.table_name}"
+
+                # Create dataset if it doesn't exist
+                try:
+                    client.get_dataset(dataset_id)
+                except Exception:
+                    dataset = bigquery.Dataset(dataset_id)
+                    dataset.location = "US"
+                    client.create_dataset(dataset, exists_ok=True)
+
+                # Upload the data with WRITE_TRUNCATE
+                job_config = bigquery.LoadJobConfig(
+                    write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE
+                )
+
+                job = client.load_table_from_dataframe(
+                    df, table_id, job_config=job_config
+                )
+                job.result()
+
+                return {
+                    "status": "success",
+                    "message": f"Successfully processed and uploaded {len(df)} recurring commitment rows"
+                }
+
+            # Read the CSV file (contribution report - existing logic)
             try:
                 # Auto-detect encoding (UTF-16 or UTF-8)
                 encoding = 'utf-8-sig'
