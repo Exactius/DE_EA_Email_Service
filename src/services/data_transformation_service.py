@@ -204,7 +204,8 @@ class DataTransformationService:
                 'Digital Acquisition Data: UTM Source': 'digital_utm_source',
                 'uqaid - Facebook Ad ID (Exactius)': 'facebook_adid',
                 'Facebook Ad ID (Exactius)': 'facebook_adid',  # Adding alternative column name
-                'Mailing Zip/Postal': 'mailing_zip'  # New field added
+                'Mailing Zip/Postal': 'mailing_zip',
+                'Recurring Commitment ID': 'recurring_commitment_id'  # New field for recurring donations
             }
             
             for old_col, new_col in utm_columns.items():

@@ -315,7 +315,8 @@ async def process_data(request: ProcessRequest):
                     'Digital Acquisition Data: Channel Type': 'digital_channel_type',
                     'Digital Acquisition Data: Device': 'digital_device',
                     'Time Created': 'time_created',
-                    'Mailing Zip/Postal': 'mailing_zip'
+                    'Mailing Zip/Postal': 'mailing_zip',
+                    'Recurring Commitment ID': 'recurring_commitment_id'
                 }
                 
                 # Rename columns using the mapping
