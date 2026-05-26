@@ -4,7 +4,7 @@ from google.cloud import bigquery
 from google.api_core.exceptions import GoogleAPIError
 import re
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 
 from ..utils import (
@@ -164,7 +164,7 @@ class BigQueryService:
 
             if write_mode == "append":
                 # Append mode: add ingestion_timestamp and append to existing table
-                data['ingestion_timestamp'] = datetime.now(datetime.timezone.utc)
+                data['ingestion_timestamp'] = datetime.now(timezone.utc)
                 logger.info(f"Append mode: added ingestion_timestamp, appending to {table_id}")
 
                 job_config = bigquery.LoadJobConfig(
