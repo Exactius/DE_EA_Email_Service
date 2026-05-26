@@ -75,6 +75,7 @@ class ProcessRequest(BaseModel):
     csv_data: Optional[str] = None  # Base64 encoded CSV data
     source_type: str = "email"  # "email" or "csv"
     csv_filename: Optional[str] = None  # Name of the CSV file to process
+    write_mode: str = "replace"  # "replace" (default, drop+recreate) or "append" (with ingestion_timestamp)
 
 @router.post("/process")
 async def process_data(request: ProcessRequest):
@@ -157,9 +158,10 @@ async def process_data(request: ProcessRequest):
                     dataset_name=request.dataset,
                     table_name=request.table_name,
                     data=df,
-                    email_name_search_key=email_name_search_key
+                    email_name_search_key=email_name_search_key,
+                    write_mode=request.write_mode
                 )
-                logger.info(f"Successfully uploaded {len(df)} rows to BigQuery")
+                logger.info(f"Successfully uploaded {len(df)} rows to BigQuery (write_mode={request.write_mode})")
             except Exception as e:
                 logger.error(f"Failed to upload to BigQuery: {str(e)}")
                 raise HTTPException(status_code=500, detail=f"Failed to upload to BigQuery: {str(e)}")

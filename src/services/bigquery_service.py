@@ -135,65 +135,78 @@ class BigQueryService:
         dataset_name: str,
         table_name: str,
         data: pd.DataFrame,
-        email_name_search_key: str
+        email_name_search_key: str,
+        write_mode: str = "replace"
     ) -> None:
         """
         Upload data to BigQuery table.
-        
+
         Args:
             dataset_name: Name of the BigQuery dataset
             table_name: Name of the BigQuery table
             data: DataFrame containing the data to upload
             email_name_search_key: Email search key for logging
-            
+            write_mode: "replace" (default, drop+recreate) or "append" (add rows with ingestion_timestamp)
+
         Raises:
             UploadError: If upload fails
         """
         try:
             # Create dataset if it doesn't exist
             self.create_dataset_if_not_exists(dataset_name)
-            
+
             # Clean column names
             data.columns = [clean_column_name(col) for col in data.columns]
             logger.info("Cleaned column names:")
             logger.info(data.columns.tolist())
-            
+
             table_id = f"{self.project_id}.{dataset_name}.{table_name}"
-            
-            # Delete table if it exists
-            try:
-                self.client.delete_table(table_id, not_found_ok=True)
-                logger.info(f"Deleted existing table {table_id} if it existed")
-            except Exception as e:
-                logger.error(f"Error deleting table {table_id}: {str(e)}")
-                raise UploadError(f"Failed to delete existing table: {str(e)}")
-            
-            # Create table with schema from DataFrame
-            schema = []
-            for col in data.columns:
-                if col == 'processed_at':
-                    schema.append(bigquery.SchemaField(col, 'DATETIME'))
-                elif col in ['id', 'email', 'phone', 'partner', 'email_name_search_key', 'first_name', 'last_name']:
-                    schema.append(bigquery.SchemaField(col, 'STRING'))
-                elif col in ['utm_adid', 'utm_campaign', 'utm_medium', 'utm_source', 'digital_utm_campaign', 'digital_utm_medium', 'digital_utm_source', 'facebook_adid']:
-                    schema.append(bigquery.SchemaField(col, 'STRING'))
-                else:
-                    schema.append(bigquery.SchemaField(col, 'STRING'))
-            
-            table = bigquery.Table(table_id, schema=schema)
-            self.client.create_table(table)
-            logger.info(f"Created new table {table_id} with schema")
-            
-            # Convert data types to match schema
-            data = convert_data_types(data, table.schema)
-            
-            # Configure the load job
-            job_config = bigquery.LoadJobConfig(
-                write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
-                schema_update_options=[
-                    bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION
-                ]
-            )
+
+            if write_mode == "append":
+                # Append mode: add ingestion_timestamp and append to existing table
+                data['ingestion_timestamp'] = datetime.now(datetime.timezone.utc)
+                logger.info(f"Append mode: added ingestion_timestamp, appending to {table_id}")
+
+                job_config = bigquery.LoadJobConfig(
+                    write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+                    schema_update_options=[
+                        bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION
+                    ]
+                )
+            else:
+                # Replace mode (default): delete and recreate table
+                try:
+                    self.client.delete_table(table_id, not_found_ok=True)
+                    logger.info(f"Deleted existing table {table_id} if it existed")
+                except Exception as e:
+                    logger.error(f"Error deleting table {table_id}: {str(e)}")
+                    raise UploadError(f"Failed to delete existing table: {str(e)}")
+
+                # Create table with schema from DataFrame
+                schema = []
+                for col in data.columns:
+                    if col == 'processed_at':
+                        schema.append(bigquery.SchemaField(col, 'DATETIME'))
+                    elif col in ['id', 'email', 'phone', 'partner', 'email_name_search_key', 'first_name', 'last_name']:
+                        schema.append(bigquery.SchemaField(col, 'STRING'))
+                    elif col in ['utm_adid', 'utm_campaign', 'utm_medium', 'utm_source', 'digital_utm_campaign', 'digital_utm_medium', 'digital_utm_source', 'facebook_adid']:
+                        schema.append(bigquery.SchemaField(col, 'STRING'))
+                    else:
+                        schema.append(bigquery.SchemaField(col, 'STRING'))
+
+                table = bigquery.Table(table_id, schema=schema)
+                self.client.create_table(table)
+                logger.info(f"Created new table {table_id} with schema")
+
+                # Convert data types to match schema
+                data = convert_data_types(data, table.schema)
+
+                job_config = bigquery.LoadJobConfig(
+                    write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+                    schema_update_options=[
+                        bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION
+                    ]
+                )
             
             # Upload the data
             job = self.client.load_table_from_dataframe(
