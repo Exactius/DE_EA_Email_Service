@@ -163,16 +163,26 @@ class BigQueryService:
             table_id = f"{self.project_id}.{dataset_name}.{table_name}"
 
             if write_mode == "append":
-                # Append mode: add ingestion_timestamp and append to existing table
+                # Append mode: add ingestion_timestamp before building schema
                 data['ingestion_timestamp'] = datetime.now(timezone.utc)
                 logger.info(f"Append mode: added ingestion_timestamp, appending to {table_id}")
 
-                job_config = bigquery.LoadJobConfig(
-                    write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
-                    schema_update_options=[
-                        bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION
-                    ]
-                )
+            # Build schema from DataFrame columns
+            schema = []
+            for col in data.columns:
+                if col == 'processed_at':
+                    schema.append(bigquery.SchemaField(col, 'DATETIME'))
+                elif col == 'ingestion_timestamp':
+                    schema.append(bigquery.SchemaField(col, 'TIMESTAMP'))
+                elif col in ['id', 'email', 'phone', 'partner', 'email_name_search_key', 'first_name', 'last_name']:
+                    schema.append(bigquery.SchemaField(col, 'STRING'))
+                elif col in ['utm_adid', 'utm_campaign', 'utm_medium', 'utm_source', 'digital_utm_campaign', 'digital_utm_medium', 'digital_utm_source', 'facebook_adid']:
+                    schema.append(bigquery.SchemaField(col, 'STRING'))
+                else:
+                    schema.append(bigquery.SchemaField(col, 'STRING'))
+
+            if write_mode == "append":
+                pass  # Table already exists, no need to create
             else:
                 # Replace mode (default): delete and recreate table
                 try:
@@ -182,31 +192,19 @@ class BigQueryService:
                     logger.error(f"Error deleting table {table_id}: {str(e)}")
                     raise UploadError(f"Failed to delete existing table: {str(e)}")
 
-                # Create table with schema from DataFrame
-                schema = []
-                for col in data.columns:
-                    if col == 'processed_at':
-                        schema.append(bigquery.SchemaField(col, 'DATETIME'))
-                    elif col in ['id', 'email', 'phone', 'partner', 'email_name_search_key', 'first_name', 'last_name']:
-                        schema.append(bigquery.SchemaField(col, 'STRING'))
-                    elif col in ['utm_adid', 'utm_campaign', 'utm_medium', 'utm_source', 'digital_utm_campaign', 'digital_utm_medium', 'digital_utm_source', 'facebook_adid']:
-                        schema.append(bigquery.SchemaField(col, 'STRING'))
-                    else:
-                        schema.append(bigquery.SchemaField(col, 'STRING'))
-
                 table = bigquery.Table(table_id, schema=schema)
                 self.client.create_table(table)
                 logger.info(f"Created new table {table_id} with schema")
 
-                # Convert data types to match schema
-                data = convert_data_types(data, table.schema)
+            # Convert data types to match schema
+            data = convert_data_types(data, schema)
 
-                job_config = bigquery.LoadJobConfig(
-                    write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
-                    schema_update_options=[
-                        bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION
-                    ]
-                )
+            job_config = bigquery.LoadJobConfig(
+                write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+                schema_update_options=[
+                    bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION
+                ]
+            )
             
             # Upload the data
             job = self.client.load_table_from_dataframe(
