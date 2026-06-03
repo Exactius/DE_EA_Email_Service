@@ -487,16 +487,22 @@ async def process_data(request: ProcessRequest):
                     dataset.location = "US"
                     client.create_dataset(dataset, exists_ok=True)
                 
-                # Delete table if it exists
-                try:
-                    client.delete_table(table_id)
-                    print(f"Deleted existing table {table_id}")
-                except Exception as e:
-                    print(f"Table {table_id} does not exist or could not be deleted: {str(e)}")
-                
+                # Handle write mode
+                if request.write_mode == "append":
+                    print(f"Appending data to {table_id}")
+                    write_disposition = bigquery.WriteDisposition.WRITE_APPEND
+                else:
+                    # Replace mode: delete and recreate
+                    try:
+                        client.delete_table(table_id)
+                        print(f"Deleted existing table {table_id}")
+                    except Exception as e:
+                        print(f"Table {table_id} does not exist or could not be deleted: {str(e)}")
+                    write_disposition = bigquery.WriteDisposition.WRITE_TRUNCATE
+
                 # Upload the data
                 job_config = bigquery.LoadJobConfig(
-                    write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE
+                    write_disposition=write_disposition
                 )
                 
                 job = client.load_table_from_dataframe(

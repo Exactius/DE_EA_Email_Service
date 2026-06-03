@@ -1,0 +1,307 @@
+# Manual EA CSV Upload - Walkthrough Guide
+
+## How to use this
+
+This guide covers two scenarios for manually uploading EveryAction (EA) contribution data:
+
+- **Scenario A: Failed email export** — The automated email export failed or was missed. You have a CSV export covering the missing date range and need to append it to the existing data.
+- **Scenario B: Full historical data replacement** — Data was retroactively changed in EA. You have a full historical re-export and need to replace all existing data after validation.
+
+## Prerequisites
+
+- Python environment with dependencies installed
+- Access to the BigQuery project (e.g., `ex-whitestork`)
+- The CSV file downloaded from EveryAction
+- Note the **UTC date and time** when the export was pulled from EA
+
+## Common Steps (both scenarios)
+
+### Step 1: Download the CSV from EveryAction
+
+1. Log into the EveryAction website
+2. Navigate to the Export/Reports
+3. Export/Download the CSV file
+   - Note the filename (e.g., `ContributionReport-5674596795.csv`)
+   - Note the current UTC time (e.g., `2026-06-01 23:47:00`)
+
+### Step 2: Place the CSV file in the service
+
+The service reads CSV files from the `test_data/` directory.
+
+```bash
+cp ~/Downloads/ContributionReport-XXXXXXX.csv test_data/
+```
+
+### Step 3: Run the EA Email service locally
+
+```bash
+python -m uvicorn main:app --reload --host 0.0.0.0 --port 8080
+```
+
+```
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080
+```
+
+---
+
+## Scenario A: Failed Email Export
+
+Use this when the automated pipeline failed and you just need to backfill the missing data. The new rows are appended directly to the production bronze table.
+
+### A1: Upload the CSV (append to production table)
+
+Open a new Terminal tab or window.
+
+```bash
+curl -X POST "http://localhost:8080/process" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "partner": "whitestork",
+    "project_id": "ex-whitestork",
+    "dataset": "bronze",
+    "table_name": "every_action_contribution_report",
+    "source_type": "csv",
+    "csv_filename": "ContributionReport-XXXXXXX.csv",
+    "write_mode": "append"
+  }'
+```
+
+**Expected response:**
+
+```json
+{"status": "success", "message": "Successfully processed and uploaded"}
+```
+
+You can now stop the local service (Ctrl+C).
+
+### A2: Add the ingestion_timestamp column
+
+The dbt model requires an `ingestion_timestamp` column for deduplication. The CSV upload path does not add one automatically, so add it manually.
+
+Replace `YYYY-MM-DD HH:MM:SS` with the UTC time you noted when the export was pulled:
+
+```sql
+ALTER TABLE `ex-whitestork.bronze.every_action_contribution_report`
+  ADD COLUMN IF NOT EXISTS ingestion_timestamp TIMESTAMP;
+
+UPDATE `ex-whitestork.bronze.every_action_contribution_report`
+  SET ingestion_timestamp = TIMESTAMP('YYYY-MM-DD HH:MM:SS UTC')
+  WHERE ingestion_timestamp IS NULL;
+```
+
+### A3: Verify the upload in BigQuery
+
+```sql
+SELECT COUNT(1) as row_count, MIN(date_received) as min_date,
+  MAX(date_received) as max_date
+FROM `ex-whitestork.bronze.every_action_contribution_report`
+```
+
+### A4: Run the dbt model
+
+The `every_action_contribution_report` dbt model uses `insert_overwrite` partitioned by `date_received`, and deduplicates by picking only rows with the latest `ingestion_timestamp` per date. This means the new data will automatically take precedence for any overlapping dates.
+
+```bash
+cd ../whitestork_DBT_V2
+dbt run --select every_action_contribution_report --target prod
+```
+
+> **Note:** No model changes are needed — the data goes directly into the table the model already reads from.
+
+### A5: Verify downstream
+
+```sql
+SELECT COUNT(1) as row_count, MIN(date_received) as min_date,
+  MAX(date_received) as max_date
+FROM `ex-whitestork.prod_silver.every_action_contribution_report`
+```
+
+---
+
+## Scenario B: Full Historical Data Replacement
+
+Use this when data was retroactively changed in EA and you need to replace all existing data. The data is uploaded to a separate staging table, validated with stakeholders, and then swapped into production.
+
+**Before starting:** Note the UTC date and time when you pulled the export from EA (e.g., `2026-06-01 23:47:00`). You will need this in step B2.
+
+### B1: Upload the CSV (to a staging table)
+
+Open a new Terminal tab or window.
+
+```bash
+curl -X POST "http://localhost:8080/process" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "partner": "whitestork",
+    "project_id": "ex-whitestork",
+    "dataset": "bronze",
+    "table_name": "ea_manual_upload",
+    "source_type": "csv",
+    "csv_filename": "ContributionReport-XXXXXXX.csv",
+    "write_mode": "append"
+  }'
+```
+
+**Expected response:**
+
+```json
+{"status": "success", "message": "Successfully processed and uploaded"}
+```
+
+You can now stop the local service (Ctrl+C).
+
+### B2: Add the ingestion_timestamp column
+
+The dbt model requires an `ingestion_timestamp` column for deduplication. The CSV upload path does not add one automatically, so add it manually.
+
+Replace `YYYY-MM-DD HH:MM:SS` with the UTC time you noted when the export was pulled:
+
+```sql
+ALTER TABLE `ex-whitestork.bronze.ea_manual_upload`
+  ADD COLUMN IF NOT EXISTS ingestion_timestamp TIMESTAMP;
+
+UPDATE `ex-whitestork.bronze.ea_manual_upload`
+  SET ingestion_timestamp = TIMESTAMP('YYYY-MM-DD HH:MM:SS UTC')
+  WHERE ingestion_timestamp IS NULL;
+```
+
+> **Why `WHERE ingestion_timestamp IS NULL`?** If you need to upload multiple CSV files (e.g., split exports), this ensures each batch keeps its own timestamp without overwriting previous ones.
+
+### B3: Verify the upload in BigQuery
+
+```sql
+SELECT COUNT(1) as row_count, MIN(date_received) as min_date,
+  MAX(date_received) as max_date
+FROM `ex-whitestork.bronze.ea_manual_upload`
+```
+
+### B4: Point the dbt model to the staging table and validate
+
+Create a branch in the dbt repo and update the model source:
+
+In `models/sources.yml`, add under the `bronze` source:
+
+```yaml
+- name: ea_manual_upload
+  description: Manually uploaded EveryAction contribution report for historical data validation
+```
+
+In `models/silver/blended/every_action_contribution_report.sql`, change:
+
+```sql
+FROM {{ source('bronze', 'every_action_contribution_report') }}
+```
+
+To:
+
+```sql
+FROM {{ source('bronze', 'ea_manual_upload') }}
+```
+
+Run the model with `--full-refresh` against dev to validate:
+
+```bash
+cd ../whitestork_DBT_V2
+dbt run --select every_action_contribution_report --full-refresh --target dev
+```
+
+Rebuild any downstream models that depend on `every_action_contribution_report` (e.g., `blended_raw`) and validate with stakeholders.
+
+### B5: Replace the production table
+
+Once validated, replace the production bronze table:
+
+```sql
+CREATE OR REPLACE TABLE `ex-whitestork.bronze.every_action_contribution_report`
+AS SELECT * FROM `ex-whitestork.bronze.ea_manual_upload`;
+```
+
+### B6: Revert the dbt model and run in prod
+
+Revert the model changes so it reads from the production table again:
+
+```bash
+cd ../whitestork_DBT_V2
+git checkout models/silver/blended/every_action_contribution_report.sql
+git checkout models/sources.yml
+```
+
+Run the model with `--full-refresh` in prod:
+
+```bash
+dbt run --select every_action_contribution_report --full-refresh --target prod
+```
+
+### B7: Verify downstream
+
+```sql
+SELECT COUNT(1) as row_count, MIN(date_received) as min_date,
+  MAX(date_received) as max_date
+FROM `ex-whitestork.prod_silver.every_action_contribution_report`
+```
+
+---
+
+## Quick Reference
+
+### Scenario A (failed export backfill)
+
+```bash
+# 1. Copy CSV to service
+cp ~/Downloads/ContributionReport-XXXXXXX.csv test_data/
+
+# 2. Start service
+python -m uvicorn main:app --reload --host 0.0.0.0 --port 8080
+
+# 3. Upload (new terminal) — append directly to production table
+curl -X POST "http://localhost:8080/process" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "partner": "whitestork",
+    "project_id": "ex-whitestork",
+    "dataset": "bronze",
+    "table_name": "every_action_contribution_report",
+    "source_type": "csv",
+    "csv_filename": "ContributionReport-XXXXXXX.csv",
+    "write_mode": "append"
+  }'
+
+# 4. Add ingestion_timestamp in BigQuery (replace YYYY-MM-DD HH:MM:SS with export time)
+#    ALTER TABLE `ex-whitestork.bronze.every_action_contribution_report` ADD COLUMN IF NOT EXISTS ingestion_timestamp TIMESTAMP;
+#    UPDATE `ex-whitestork.bronze.every_action_contribution_report` SET ingestion_timestamp = TIMESTAMP('YYYY-MM-DD HH:MM:SS UTC') WHERE ingestion_timestamp IS NULL;
+
+# 5. Run dbt model
+cd ../whitestork_DBT_V2
+dbt run --select every_action_contribution_report --target prod
+```
+
+### Scenario B (full historical replacement)
+
+```bash
+# 1. Copy CSV to service
+cp ~/Downloads/ContributionReport-XXXXXXX.csv test_data/
+
+# 2. Start service
+python -m uvicorn main:app --reload --host 0.0.0.0 --port 8080
+
+# 3. Upload (new terminal) — to staging table
+curl -X POST "http://localhost:8080/process" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "partner": "whitestork",
+    "project_id": "ex-whitestork",
+    "dataset": "bronze",
+    "table_name": "ea_manual_upload",
+    "source_type": "csv",
+    "csv_filename": "ContributionReport-XXXXXXX.csv",
+    "write_mode": "append"
+  }'
+
+# 4. Add ingestion_timestamp in BigQuery (replace YYYY-MM-DD HH:MM:SS with export time)
+#    ALTER TABLE `ex-whitestork.bronze.ea_manual_upload` ADD COLUMN IF NOT EXISTS ingestion_timestamp TIMESTAMP;
+#    UPDATE `ex-whitestork.bronze.ea_manual_upload` SET ingestion_timestamp = TIMESTAMP('YYYY-MM-DD HH:MM:SS UTC') WHERE ingestion_timestamp IS NULL;
+# 5. Update dbt model source to ea_manual_upload (in a branch)
+# 6. Run dbt in dev with --full-refresh, validate with stakeholders
+# 7. Replace production table, revert model, run --full-refresh in prod
+```
