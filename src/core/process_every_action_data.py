@@ -304,18 +304,18 @@ async def process_data(request: ProcessRequest):
                     'utm_campaign (Exactius)': 'utm_campaign',
                     'uqaid  to  Facebook Ad ID (Exactius)': 'facebook_adid',
                     # Legacy columns
-                    'Legacy: FR UTM Campaign': 'legacy_utm_campaign',
-                    'Legacy: FR UTM Content': 'legacy_utm_content',
-                    'Legacy: FR UTM Medium': 'legacy_utm_medium',
-                    'Legacy: FR UTM Source': 'legacy_utm_source',
-                    'Legacy: FR UTM Term': 'legacy_utm_term',
+                    'Legacy: FR UTM Campaign': 'legacy_fr_utm_campaign',
+                    'Legacy: FR UTM Content': 'legacy_fr_utm_content',
+                    'Legacy: FR UTM Medium': 'legacy_fr_utm_medium',
+                    'Legacy: FR UTM Source': 'legacy_fr_utm_source',
+                    'Legacy: FR UTM Term': 'legacy_fr_utm_term',
                     'Channel': 'channel',
                     'Online Form Campaign Type': 'online_form_campaign_type',
-                    'Via Main Domain  to  vmd  to  (Exactius)': 'via_main_domain',
-                    'Digital Acquisition Data: AdSet': 'digital_adset',
-                    'Digital Acquisition Data: Channel': 'digital_channel',
-                    'Digital Acquisition Data: Channel Type': 'digital_channel_type',
-                    'Digital Acquisition Data: Device': 'digital_device',
+                    'Via Main Domain  to  vmd  to  (Exactius)': 'via_main_domain_vmd_exactius',
+                    'Digital Acquisition Data: AdSet': 'digital_acquisition_data_adset',
+                    'Digital Acquisition Data: Channel': 'digital_acquisition_data_channel',
+                    'Digital Acquisition Data: Channel Type': 'digital_acquisition_data_channel_type',
+                    'Digital Acquisition Data: Device': 'digital_acquisition_data_device',
                     'Time Created': 'time_created',
                     'Mailing Zip/Postal': 'mailing_zip',
                     'Recurring Commitment ID': 'recurring_commitment_id'
@@ -490,6 +490,7 @@ async def process_data(request: ProcessRequest):
                 # Handle write mode
                 if request.write_mode == "append":
                     print(f"Appending data to {table_id}")
+                    df['ingestion_timestamp'] = pd.Timestamp.now(tz='UTC')
                     write_disposition = bigquery.WriteDisposition.WRITE_APPEND
                 else:
                     # Replace mode: delete and recreate

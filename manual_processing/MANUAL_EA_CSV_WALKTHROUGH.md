@@ -12,7 +12,8 @@ This guide covers two scenarios for manually uploading EveryAction (EA) contribu
 - Python environment with dependencies installed
 - Access to the BigQuery project (e.g., `ex-whitestork`)
 - The CSV file downloaded from EveryAction
-- Note the **UTC date and time** when the export was pulled from EA
+
+> **Note:** When `write_mode=append` is used, the service automatically adds an `ingestion_timestamp` column (UTC now) to every row. The dbt model uses this to dedupe overlapping `date_received` partitions, so the newly uploaded rows always take precedence.
 
 ## Common Steps (both scenarios)
 
@@ -22,7 +23,6 @@ This guide covers two scenarios for manually uploading EveryAction (EA) contribu
 2. Navigate to the Export/Reports
 3. Export/Download the CSV file
    - Note the filename (e.g., `ContributionReport-5674596795.csv`)
-   - Note the current UTC time (e.g., `2026-06-01 23:47:00`)
 
 ### Step 2: Place the CSV file in the service
 
@@ -70,35 +70,26 @@ curl -X POST "http://localhost:8080/process" \
 **Expected response:**
 
 ```json
-{"status": "success", "message": "Successfully processed and uploaded"}
+{"status": "success", "message": "Successfully processed and uploaded N rows"}
 ```
 
 You can now stop the local service (Ctrl+C).
 
-### A2: Add the ingestion_timestamp column
-
-The dbt model requires an `ingestion_timestamp` column for deduplication. The CSV upload path does not add one automatically, so add it manually.
-
-Replace `YYYY-MM-DD HH:MM:SS` with the UTC time you noted when the export was pulled:
+### A2: Verify the upload in BigQuery
 
 ```sql
-ALTER TABLE `ex-whitestork.bronze.every_action_contribution_report`
-  ADD COLUMN IF NOT EXISTS ingestion_timestamp TIMESTAMP;
-
-UPDATE `ex-whitestork.bronze.every_action_contribution_report`
-  SET ingestion_timestamp = TIMESTAMP('YYYY-MM-DD HH:MM:SS UTC')
-  WHERE ingestion_timestamp IS NULL;
+SELECT COUNT(1) AS row_count,
+  COUNTIF(ingestion_timestamp IS NULL) AS null_ts,
+  MIN(ingestion_timestamp) AS min_ts,
+  MAX(ingestion_timestamp) AS max_ts,
+  MIN(date_received) AS min_date,
+  MAX(date_received) AS max_date
+FROM `ex-whitestork.bronze.every_action_contribution_report`;
 ```
 
-### A3: Verify the upload in BigQuery
+Confirm: `null_ts` is 0, `max_ts` is roughly "now" (your upload time), and the row count jumped by the number reported by the curl response.
 
-```sql
-SELECT COUNT(1) as row_count, MIN(date_received) as min_date,
-  MAX(date_received) as max_date
-FROM `ex-whitestork.bronze.every_action_contribution_report`
-```
-
-### A4: Run the dbt model
+### A3: Run the dbt model
 
 The `every_action_contribution_report` dbt model uses `insert_overwrite` partitioned by `date_received`, and deduplicates by picking only rows with the latest `ingestion_timestamp` per date. This means the new data will automatically take precedence for any overlapping dates.
 
@@ -109,7 +100,7 @@ dbt run --select every_action_contribution_report --target prod
 
 > **Note:** No model changes are needed — the data goes directly into the table the model already reads from.
 
-### A5: Verify downstream
+### A4: Verify downstream
 
 ```sql
 SELECT COUNT(1) as row_count, MIN(date_received) as min_date,
@@ -122,8 +113,6 @@ FROM `ex-whitestork.prod_silver.every_action_contribution_report`
 ## Scenario B: Full Historical Data Replacement
 
 Use this when data was retroactively changed in EA and you need to replace all existing data. The data is uploaded to a separate staging table, validated with stakeholders, and then swapped into production.
-
-**Before starting:** Note the UTC date and time when you pulled the export from EA (e.g., `2026-06-01 23:47:00`). You will need this in step B2.
 
 ### B1: Upload the CSV (to a staging table)
 
@@ -146,29 +135,14 @@ curl -X POST "http://localhost:8080/process" \
 **Expected response:**
 
 ```json
-{"status": "success", "message": "Successfully processed and uploaded"}
+{"status": "success", "message": "Successfully processed and uploaded N rows"}
 ```
 
 You can now stop the local service (Ctrl+C).
 
-### B2: Add the ingestion_timestamp column
+> **Multiple uploads:** If you need to upload multiple CSV files (e.g., split exports) to the same staging table, each batch will get its own `ingestion_timestamp` automatically, so dedup still works correctly.
 
-The dbt model requires an `ingestion_timestamp` column for deduplication. The CSV upload path does not add one automatically, so add it manually.
-
-Replace `YYYY-MM-DD HH:MM:SS` with the UTC time you noted when the export was pulled:
-
-```sql
-ALTER TABLE `ex-whitestork.bronze.ea_manual_upload`
-  ADD COLUMN IF NOT EXISTS ingestion_timestamp TIMESTAMP;
-
-UPDATE `ex-whitestork.bronze.ea_manual_upload`
-  SET ingestion_timestamp = TIMESTAMP('YYYY-MM-DD HH:MM:SS UTC')
-  WHERE ingestion_timestamp IS NULL;
-```
-
-> **Why `WHERE ingestion_timestamp IS NULL`?** If you need to upload multiple CSV files (e.g., split exports), this ensures each batch keeps its own timestamp without overwriting previous ones.
-
-### B3: Verify the upload in BigQuery
+### B2: Verify the upload in BigQuery
 
 ```sql
 SELECT COUNT(1) as row_count, MIN(date_received) as min_date,
@@ -176,7 +150,7 @@ SELECT COUNT(1) as row_count, MIN(date_received) as min_date,
 FROM `ex-whitestork.bronze.ea_manual_upload`
 ```
 
-### B4: Point the dbt model to the staging table and validate
+### B3: Point the dbt model to the staging table and validate
 
 Create a branch in the dbt repo and update the model source:
 
@@ -208,7 +182,7 @@ dbt run --select every_action_contribution_report --full-refresh --target dev
 
 Rebuild any downstream models that depend on `every_action_contribution_report` (e.g., `blended_raw`) and validate with stakeholders.
 
-### B5: Replace the production table
+### B4: Replace the production table
 
 Once validated, replace the production bronze table:
 
@@ -217,7 +191,7 @@ CREATE OR REPLACE TABLE `ex-whitestork.bronze.every_action_contribution_report`
 AS SELECT * FROM `ex-whitestork.bronze.ea_manual_upload`;
 ```
 
-### B6: Revert the dbt model and run in prod
+### B5: Revert the dbt model and run in prod
 
 Revert the model changes so it reads from the production table again:
 
@@ -233,7 +207,7 @@ Run the model with `--full-refresh` in prod:
 dbt run --select every_action_contribution_report --full-refresh --target prod
 ```
 
-### B7: Verify downstream
+### B6: Verify downstream
 
 ```sql
 SELECT COUNT(1) as row_count, MIN(date_received) as min_date,
@@ -267,11 +241,7 @@ curl -X POST "http://localhost:8080/process" \
     "write_mode": "append"
   }'
 
-# 4. Add ingestion_timestamp in BigQuery (replace YYYY-MM-DD HH:MM:SS with export time)
-#    ALTER TABLE `ex-whitestork.bronze.every_action_contribution_report` ADD COLUMN IF NOT EXISTS ingestion_timestamp TIMESTAMP;
-#    UPDATE `ex-whitestork.bronze.every_action_contribution_report` SET ingestion_timestamp = TIMESTAMP('YYYY-MM-DD HH:MM:SS UTC') WHERE ingestion_timestamp IS NULL;
-
-# 5. Run dbt model
+# 4. Run dbt model
 cd ../whitestork_DBT_V2
 dbt run --select every_action_contribution_report --target prod
 ```
@@ -298,10 +268,7 @@ curl -X POST "http://localhost:8080/process" \
     "write_mode": "append"
   }'
 
-# 4. Add ingestion_timestamp in BigQuery (replace YYYY-MM-DD HH:MM:SS with export time)
-#    ALTER TABLE `ex-whitestork.bronze.ea_manual_upload` ADD COLUMN IF NOT EXISTS ingestion_timestamp TIMESTAMP;
-#    UPDATE `ex-whitestork.bronze.ea_manual_upload` SET ingestion_timestamp = TIMESTAMP('YYYY-MM-DD HH:MM:SS UTC') WHERE ingestion_timestamp IS NULL;
-# 5. Update dbt model source to ea_manual_upload (in a branch)
-# 6. Run dbt in dev with --full-refresh, validate with stakeholders
-# 7. Replace production table, revert model, run --full-refresh in prod
+# 4. Update dbt model source to ea_manual_upload (in a branch)
+# 5. Run dbt in dev with --full-refresh, validate with stakeholders
+# 6. Replace production table, revert model, run --full-refresh in prod
 ```
