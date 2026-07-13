@@ -11,6 +11,7 @@ This guide covers two scenarios for manually uploading EveryAction (EA) contribu
 
 - Python environment with dependencies installed
 - Access to the BigQuery project (e.g., `ex-whitestork`)
+- VPN access to EveryAction — some networks require it to load the EA site
 - The CSV file downloaded from EveryAction
 
 > **Note:** When `write_mode=append` is used, the service automatically adds an `ingestion_timestamp` column (UTC now) to every row. The dbt model uses this to dedupe overlapping `date_received` partitions, so the newly uploaded rows always take precedence.
@@ -107,6 +108,18 @@ SELECT COUNT(1) as row_count, MIN(date_received) as min_date,
   MAX(date_received) as max_date
 FROM `ex-whitestork.prod_silver.every_action_contribution_report`
 ```
+
+### A5: Reschedule the report in EveryAction
+
+> **Important:** Failed reports are **not** automatically retried the next day, you need to re-create the scheduled report.
+
+1. In EveryAction, go to **Reporting → Report Manager → Saved Templates**.
+2. Locate the template that drives the automated export. Usually this is `Exactius_Contribution_Report - whitestork`. If you're unsure which template to use, sort by **Last Run** date and pick the most recent one.
+3. Open the template, then click **Report Actions → Schedule**.
+4. Configure the schedule using the settings shown in [`New Scheduled Report config.png`](./New%20Scheduled%20Report%20config.png), adjust the secondary email as appropriate.
+5. Click **Schedule** to save.
+
+The next day's export should now run automatically.
 
 ---
 
@@ -244,6 +257,10 @@ curl -X POST "http://localhost:8080/process" \
 # 4. Run dbt model
 cd ../whitestork_DBT_V2
 dbt run --select every_action_contribution_report --target prod
+
+# 5. Reschedule the report in EA (Reporting -> Report Manager -> Saved Templates
+#    -> pick template by Last Run -> Report Actions -> Schedule -> configure per
+#    manual_processing/New Scheduled Report config.png -> Schedule)
 ```
 
 ### Scenario B (full historical replacement)
