@@ -522,12 +522,14 @@ async def process_data(request: ProcessRequest):
             "message": f"Successfully processed and uploaded {len(df)} rows"
         }
         
+    except HTTPException:
+        raise
     except (UploadError, TransformationError, AuthError, EmailProcessingError) as e:
         log_error("Error processing data", {"error": str(e)})
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
-        log_error("Unexpected error", {"error": str(e)})
-        raise HTTPException(status_code=500, detail="An unexpected error occurred")
+        log_error("Unexpected error", {"error": str(e), "traceback": traceback.format_exc()})
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {type(e).__name__}: {e}")
 
 @router.post("/process-csv")
 async def process_csv_file(
