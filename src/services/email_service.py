@@ -1,4 +1,4 @@
-from typing import List, Optional, Dict, Any, Final
+from typing import List, Optional, Dict, Any, Final, Tuple
 import base64
 import io
 import pandas as pd
@@ -280,20 +280,24 @@ class EmailService:
             logger.error(f"Failed to extract download link: {str(e)}")
             return None
 
-    def download_file(self, url: str) -> Optional[bytes]:
-        """Download file from EveryAction"""
+    def download_file(self, url: str) -> Tuple[Optional[bytes], Optional[str]]:
+        """Download file from EveryAction. Returns (content, error_message)."""
         try:
             logger.info(f"Attempting to download file from URL: {url}")
             response = httpx.get(url, timeout=60)
             if response.status_code == 200:
                 logger.info("File downloaded successfully")
-                return response.content
-            else:
-                logger.error(f"Failed to download file. Status code: {response.status_code}, Response: {response.text}")
-                return None
+                return response.content, None
+            error_msg = (
+                f"EveryAction download returned HTTP {response.status_code}: "
+                f"{response.text[:500]}"
+            )
+            logger.error(error_msg)
+            return None, error_msg
         except Exception as e:
-            logger.error(f"Failed to download file: {str(e)}")
-            return None
+            error_msg = f"EveryAction download raised {type(e).__name__}: {e}"
+            logger.error(error_msg)
+            return None, error_msg
 
     async def process_attachments(
         self,
@@ -342,7 +346,7 @@ class EmailService:
             download_url = self.extract_download_link(message_data)
             if download_url:
                 # Download the file
-                file_content = self.download_file(download_url)
+                file_content, download_error = self.download_file(download_url)
                 if file_content:
                     # Auto-detect encoding (UTF-16 or UTF-8)
                     try:
@@ -361,8 +365,8 @@ class EmailService:
                     data["message_ids"].append(messages[0]['id'])
                     logger.info("File downloaded and decoded successfully")
                 else:
-                    logger.error("Failed to download file content")
-                    return {"status": "error", "message": "Failed to download file content"}
+                    logger.error(f"Failed to download file content: {download_error}")
+                    return {"status": "error", "message": download_error or "Failed to download file content"}
             else:
                 logger.error("No download link found in message")
                 return {"status": "error", "message": "No download link found in message"}
