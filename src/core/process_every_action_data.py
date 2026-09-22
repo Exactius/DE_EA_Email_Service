@@ -11,6 +11,7 @@ from google.cloud import bigquery
 import io
 import base64
 import hashlib
+import re
 
 from ..utils import (
     TransformationError,
@@ -29,6 +30,59 @@ from ..config import settings
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# The free-text notes column in the EA contribution export. The manual UI export
+# leaves this field unquoted, so any comma an operator typed into it splits the row
+# into extra fields and pandas drops it via on_bad_lines. We merge the surplus back.
+EA_NOTES_COLUMN = "Online Reference Number"
+
+
+def repair_overflow_row(fields, columns):
+    """Repair a CSV row that has more fields than expected because an unquoted
+    comma in the free-text notes column (``EA_NOTES_COLUMN``) split it apart.
+
+    The surplus fields are merged back into the notes column, then the result is
+    validated against structural anchors (numeric Contribution ID, ISO Date
+    Received, numeric Amount). If the merge doesn't restore a valid row — meaning
+    the extra comma was somewhere we don't understand — returns ``None`` so the
+    caller can surface the row instead of guessing.
+
+    Args:
+        fields: The parsed fields of the offending row.
+        columns: The expected column names, in order.
+
+    Returns:
+        A list of len(columns), or ``None`` if it can't be safely repaired.
+    """
+    if len(fields) <= len(columns) or EA_NOTES_COLUMN not in columns:
+        return None
+
+    notes_idx = columns.index(EA_NOTES_COLUMN)
+    extra = len(fields) - len(columns)
+    merged = (
+        fields[:notes_idx]
+        + [",".join(fields[notes_idx:notes_idx + extra + 1])]
+        + fields[notes_idx + extra + 1:]
+    )
+    if len(merged) != len(columns):
+        return None
+
+    def _value(name):
+        return merged[columns.index(name)] if name in columns else ""
+
+    contribution_id = _value("Contribution ID").strip()
+    date_received = _value("Date Received").strip()
+    amount = _value("Amount").strip()
+
+    if not contribution_id.isdigit():
+        return None
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_received):
+        return None
+    if not re.match(r"^-?\d+(\.\d+)?$", amount):
+        return None
+
+    return merged
+
 
 # Load environment variables
 load_dotenv()
@@ -99,6 +153,10 @@ async def process_data(request: ProcessRequest):
         dict: Response with status and message
     """
     try:
+        # Rows recovered from / rejected by the bad-line repair (csv path only).
+        recovered_ids = []
+        skipped_details = []
+
         # Initialize services
         auth_service = AuthService(request.project_id)
         email_service = EmailService(auth_service)
@@ -246,12 +304,15 @@ async def process_data(request: ProcessRequest):
 
                 print(f"Detected encoding: {encoding}")
 
-                # Read the CSV properly using pandas
+                # Read the CSV properly using pandas. The python engine lets us
+                # capture rows pandas can't parse (instead of silently dropping
+                # them) so we can repair and, failing that, report them.
+                bad_lines = []
                 df = pd.read_csv(
                     csv_path,
                     encoding=encoding,  # Auto-detected encoding
-                    on_bad_lines='skip',
-                    low_memory=False,
+                    engine='python',
+                    on_bad_lines=lambda bad: bad_lines.append(bad),
                     skiprows=skip_rows,  # Skip SEP= line if it exists
                     quoting=1,  # QUOTE_ALL
                     dtype=str  # Read all columns as strings initially
@@ -267,6 +328,44 @@ async def process_data(request: ProcessRequest):
 
                 # Clean column names first - remove extra spaces
                 df.columns = df.columns.str.strip()
+
+                # Recover rows pandas couldn't parse (unquoted commas in the
+                # free-text notes column). Anything we can't safely repair is
+                # reported so an operator can reconcile it rather than losing it.
+                raw_columns = df.columns.tolist()
+                recovered_rows = []
+                skipped_details = []
+                for bad in bad_lines:
+                    repaired = repair_overflow_row(bad, raw_columns)
+                    if repaired is not None:
+                        recovered_rows.append(repaired)
+                    else:
+                        skipped_details.append({
+                            "contribution_id": bad[0] if bad else None,
+                            "field_count": len(bad),
+                        })
+
+                if recovered_rows:
+                    df = pd.concat(
+                        [df, pd.DataFrame(recovered_rows, columns=raw_columns)],
+                        ignore_index=True,
+                    )
+
+                recovered_ids = (
+                    [r[raw_columns.index("Contribution ID")] for r in recovered_rows]
+                    if "Contribution ID" in raw_columns else []
+                )
+
+                if bad_lines:
+                    logger.warning(
+                        f"CSV had {len(bad_lines)} unparseable line(s): "
+                        f"recovered {len(recovered_rows)}, "
+                        f"still skipped {len(skipped_details)}"
+                    )
+                    if recovered_ids:
+                        logger.warning(f"Recovered contribution IDs: {recovered_ids}")
+                    if skipped_details:
+                        logger.warning(f"Unrecoverable rows: {skipped_details}")
 
                 # Create mapping from actual columns to expected columns
                 column_mapping = {
@@ -519,9 +618,13 @@ async def process_data(request: ProcessRequest):
         
         return {
             "status": "success",
-            "message": f"Successfully processed and uploaded {len(df)} rows"
+            "message": f"Successfully processed and uploaded {len(df)} rows",
+            "recovered_rows": len(recovered_ids),
+            "recovered_contribution_ids": recovered_ids,
+            "skipped_rows": len(skipped_details),
+            "skipped_details": skipped_details,
         }
-        
+
     except HTTPException:
         raise
     except (UploadError, TransformationError, AuthError, EmailProcessingError) as e:

@@ -74,6 +74,8 @@ curl -X POST "http://localhost:8080/process" \
 {"status": "success", "message": "Successfully processed and uploaded N rows"}
 ```
 
+> **Note:** The response also reports `recovered_rows`/`recovered_contribution_ids` (rows that had unquoted commas in a free-text field and were automatically repaired) and `skipped_rows`/`skipped_details` (rows that couldn't be safely parsed). If `skipped_rows` is greater than 0, reconcile those Contribution IDs manually — they were not uploaded.
+
 You can now stop the local service (Ctrl+C).
 
 ### A2: Verify the upload in BigQuery
